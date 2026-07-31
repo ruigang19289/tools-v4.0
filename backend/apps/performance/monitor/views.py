@@ -9,6 +9,7 @@ import time
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 # Global connection storage
 connections = {}
@@ -34,11 +35,13 @@ def connect(request):
     try:
         data = json.loads(request.body)
         host = data.get('host', '')
-        username = data.get('username', '')
-        password = data.get('password', '')
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
         port = int(data.get('port', 22) or 22)
 
-        if not host or not username or not password:
+        if not host:
             return JsonResponse({'status': 'error', 'error': 'Missing required parameters'}, status=400)
 
         # Generate connection ID
@@ -46,20 +49,7 @@ def connect(request):
 
         # Try to establish SSH connection and get system info
         try:
-            import paramiko
-
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-            ssh.connect(
-                hostname=host,
-                port=port,
-                username=username,
-                password=password,
-                timeout=10,
-                allow_agent=False,
-                look_for_keys=False
-            )
+            ssh = connect_ssh(host, auth, port=port, timeout=10)
 
             # Get system info
             system_info = get_system_info(ssh)
@@ -69,8 +59,7 @@ def connect(request):
                 connections[connection_id] = {
                     'id': connection_id,
                     'host': host,
-                    'username': username,
-                    'password': password,
+                    'auth': auth,
                     'port': port,
                     'ssh': ssh,
                     'system_info': system_info,
@@ -170,15 +159,8 @@ def system_info(request):
 
                 # Check if paramiko is available for reconnection
                 try:
-                    import paramiko
-                    ssh = paramiko.SSHClient()
-                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                    ssh.connect(
-                        hostname=conn['host'],
-                        port=conn.get('port', 22),
-                        username=conn['username'],
-                        password=conn['password'],
-                        timeout=10
+                    ssh = connect_ssh(
+                        conn['host'], conn['auth'], port=conn.get('port', 22), timeout=10
                     )
                     conn['ssh'] = ssh
 

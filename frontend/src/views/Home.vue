@@ -110,6 +110,7 @@
               <span class="tool-badge">{{ modulesStatus.ansible ? '可用' : '维护中' }}</span>
             </router-link>
           </li>
+          <li class="tool-item"><router-link to="/system/hardware-inspection" :class="['tool-link', { disabled: !modulesStatus.hardware_inspection }]" :event="modulesStatus.hardware_inspection ? 'click' : ''"><span class="tool-name">硬件巡检</span><span class="tool-badge">{{ modulesStatus.hardware_inspection ? '可用' : '维护中' }}</span></router-link></li>
           <li class="tool-item">
             <router-link
               to="/system/init"

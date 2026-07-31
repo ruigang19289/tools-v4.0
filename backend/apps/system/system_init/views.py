@@ -12,13 +12,13 @@ import json
 import threading
 import time
 import uuid
-import paramiko
 import re
 from datetime import datetime
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import ipaddress
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 # 活跃任务存储
 active_tasks = {}
@@ -73,15 +73,23 @@ def parse_ip_range(host_input):
     return [host_input]
 
 
-def ssh_connect(host, port, username, password, timeout=10):
+def ssh_connect(host, port, auth, timeout=10):
     """创建SSH连接并返回客户端"""
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        ssh.connect(host, port=port, username=username, password=password, timeout=timeout)
-        return ssh, None
-    except Exception as e:
-        return None, str(e)
+        return connect_ssh(host, auth, port=port, timeout=timeout), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def get_host_auth(host_info):
+    """Parse the shared authentication fields carried by a host entry."""
+    return parse_ssh_auth(host_info)
+
+
+def validate_hosts_auth(hosts):
+    """Validate each host entry before starting a batch operation."""
+    for host_info in hosts:
+        get_host_auth(host_info)
 
 
 def execute_ssh_command(ssh, command, timeout=60):
@@ -106,14 +114,18 @@ def validate_hosts(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         results = []
         for host_info in hosts:
             ip = host_info.get('ip')
-            username = host_info.get('username', 'root')
-            password = host_info.get('password')
             port = int(host_info.get('port', 22))
+            auth = get_host_auth(host_info)
 
-            ssh, error = ssh_connect(ip, port, username, password)
+            ssh, error = ssh_connect(ip, port, auth)
 
             if ssh:
                 # 获取主机名
@@ -173,7 +185,7 @@ def process_host_init(ssh, host_info, config, result_container, task_id):
     """处理单个主机的初始化操作"""
     ip = host_info.get('ip')
     hostname = host_info.get('hostname', generate_hostname_from_ip(ip))
-    username = host_info.get('username', 'root')
+    auth = get_host_auth(host_info)
 
     result = {
         'ip': ip,
@@ -394,6 +406,11 @@ def full_init(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         # 按IP排序并生成主机名
         sorted_hosts = sort_hosts_by_ip(hosts)
         for index, host in enumerate(sorted_hosts):
@@ -411,8 +428,7 @@ def full_init(request):
 
         for host_info in sorted_hosts:
             ip = host_info.get('ip')
-            username = host_info.get('username', 'root')
-            password = host_info.get('password')
+            auth = get_host_auth(host_info)
             port = int(host_info.get('port', 22))
             hostname = host_info.get('hostname')
 
@@ -424,7 +440,7 @@ def full_init(request):
                 'logs': []
             }
 
-            ssh, error = ssh_connect(ip, port, username, password)
+            ssh, error = ssh_connect(ip, port, auth)
             if not ssh:
                 result['success'] = False
                 result['message'] = f'连接失败: {error}'
@@ -483,15 +499,14 @@ def full_init(request):
         all_pubkeys = []
         for host_info in sorted_hosts:
             ip = host_info.get('ip')
-            username = host_info.get('username', 'root')
-            password = host_info.get('password')
+            auth = get_host_auth(host_info)
             port = int(host_info.get('port', 22))
 
             result = next((r for r in all_results if r['ip'] == ip), None)
             if not result:
                 continue
 
-            ssh, error = ssh_connect(ip, port, username, password)
+            ssh, error = ssh_connect(ip, port, auth)
             if not ssh:
                 continue
 
@@ -516,15 +531,14 @@ def full_init(request):
         if all_pubkeys:
             for host_info in sorted_hosts:
                 ip = host_info.get('ip')
-                username = host_info.get('username', 'root')
-                password = host_info.get('password')
+                auth = get_host_auth(host_info)
                 port = int(host_info.get('port', 22))
 
                 result = next((r for r in all_results if r['ip'] == ip), None)
                 if not result:
                     continue
 
-                ssh, error = ssh_connect(ip, port, username, password)
+                ssh, error = ssh_connect(ip, port, auth)
                 if not ssh:
                     continue
 
@@ -559,6 +573,11 @@ def modify_hostnames(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         # 按IP排序并生成主机名
         sorted_hosts = sort_hosts_by_ip(hosts)
         for index, host in enumerate(sorted_hosts):
@@ -576,8 +595,7 @@ def modify_hostnames(request):
         results = []
         for host_info in sorted_hosts:
             ip = host_info.get('ip')
-            username = host_info.get('username', 'root')
-            password = host_info.get('password')
+            auth = get_host_auth(host_info)
             port = int(host_info.get('port', 22))
             hostname = host_info.get('hostname')
 
@@ -589,7 +607,7 @@ def modify_hostnames(request):
                 'logs': []
             }
 
-            ssh, error = ssh_connect(ip, port, username, password)
+            ssh, error = ssh_connect(ip, port, auth)
             if not ssh:
                 result['success'] = False
                 result['message'] = f'连接失败: {error}'
@@ -644,6 +662,11 @@ def configure_ntp(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         config = {'configure_ntp': True, 'ntp_servers': ntp_servers}
         results = execute_parallel_init(hosts, config)
         return JsonResponse({'status': 'success', 'results': results})
@@ -663,14 +686,18 @@ def configure_ssh(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         # 第一步：生成密钥并收集公钥
         all_pubkeys = []
         results = []
 
         for host_info in hosts:
             ip = host_info.get('ip')
-            username = host_info.get('username', 'root')
-            password = host_info.get('password')
+            auth = get_host_auth(host_info)
             port = int(host_info.get('port', 22))
 
             result = {
@@ -681,7 +708,7 @@ def configure_ssh(request):
                 'logs': []
             }
 
-            ssh, error = ssh_connect(ip, port, username, password)
+            ssh, error = ssh_connect(ip, port, auth)
             if not ssh:
                 result['success'] = False
                 result['message'] = f'连接失败: {error}'
@@ -720,8 +747,7 @@ def configure_ssh(request):
         if all_pubkeys:
             for host_info in hosts:
                 ip = host_info.get('ip')
-                username = host_info.get('username', 'root')
-                password = host_info.get('password')
+                auth = get_host_auth(host_info)
                 port = int(host_info.get('port', 22))
 
                 # 找到对应的result
@@ -729,7 +755,7 @@ def configure_ssh(request):
                 if not result or not result['success']:
                     continue
 
-                ssh, error = ssh_connect(ip, port, username, password)
+                ssh, error = ssh_connect(ip, port, auth)
                 if not ssh:
                     continue
 
@@ -769,6 +795,11 @@ def disable_selinux(request):
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
 
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
+
         config = {'disable_selinux': True}
         results = execute_parallel_init(hosts, config)
         return JsonResponse({'status': 'success', 'results': results})
@@ -791,6 +822,11 @@ def configure_firewall(request):
 
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
+
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
 
         config = {
             'configure_firewall': True,
@@ -824,6 +860,11 @@ def security_hardening(request):
 
         if not hosts:
             return JsonResponse({'status': 'error', 'error': '请提供主机列表'}, status=400)
+
+        try:
+            validate_hosts_auth(hosts)
+        except ValueError as exc:
+            return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
 
         config = {
             'security_hardening': True,
@@ -873,13 +914,12 @@ def execute_parallel_init(hosts, config):
 def process_host_task(host_info, config):
     """处理单个主机初始化任务"""
     ip = host_info.get('ip')
-    username = host_info.get('username', 'root')
-    password = host_info.get('password')
+    auth = get_host_auth(host_info)
     port = int(host_info.get('port', 22))
 
     result_container = []
 
-    ssh, error = ssh_connect(ip, port, username, password)
+    ssh, error = ssh_connect(ip, port, auth)
 
     if not ssh:
         return {

@@ -29,8 +29,18 @@
             </div>
           </div>
           <div class="form-group">
+            <label>认证方式:</label>
+            <select v-model="authMethod" class="form-select">
+              <option value="password">密码认证</option>
+              <option value="ssh_key">SSH 私钥认证（容器挂载）</option>
+            </select>
+          </div>
+          <div v-if="authMethod === 'password'" class="form-group">
             <label>密码:</label>
-            <input type="text" v-model="password" placeholder="******">
+            <input type="password" v-model="password" placeholder="******">
+          </div>
+          <div v-else class="auth-tip">
+            使用容器内挂载的私钥。路径由服务端 <code>TOOLS_ANSIBLE_PRIVATE_KEY_PATH</code> 配置，网页不会接收或保存私钥。
           </div>
           <button class="btn btn-primary btn-full" @click="validateHosts" :disabled="!canValidate">
             验证连接
@@ -243,6 +253,7 @@ const hostsText = ref('')
 const username = ref('root')
 const port = ref(22)
 const password = ref('')
+const authMethod = ref('password')
 
 // State
 const validatedHosts = ref([])
@@ -348,7 +359,7 @@ const useModule = (mod) => {
 
 // Computed
 const canValidate = computed(() => {
-  return hostsText.value.trim() && username.value.trim() && password.value
+  return hostsText.value.trim() && username.value.trim() && (authMethod.value === 'ssh_key' || password.value)
 })
 
 const canExecute = computed(() => {
@@ -483,7 +494,8 @@ const validateHosts = async () => {
           hosts: [{
             ip,
             username: username.value,
-            password: password.value,
+            auth_method: authMethod.value,
+            password: authMethod.value === 'password' ? password.value : '',
             port: port.value
           }]
         })
@@ -533,7 +545,8 @@ const executeCommand = async () => {
     const hostsWithCreds = selectedHosts.value.map(ip => ({
       ip,
       username: username.value,
-      password: password.value,
+      auth_method: authMethod.value,
+      password: authMethod.value === 'password' ? password.value : '',
       port: port.value
     }))
     
@@ -571,7 +584,8 @@ const transferFile = async () => {
     const hostsWithCreds = selectedHosts.value.map(ip => ({
       ip,
       username: username.value,
-      password: password.value,
+      auth_method: authMethod.value,
+      password: authMethod.value === 'password' ? password.value : '',
       port: port.value
     }))
     
@@ -608,7 +622,8 @@ const runPlaybook = async () => {
     const hostsWithCreds = selectedHosts.value.map(ip => ({
       ip,
       username: username.value,
-      password: password.value,
+      auth_method: authMethod.value,
+      password: authMethod.value === 'password' ? password.value : '',
       port: port.value
     }))
 
@@ -672,6 +687,7 @@ usePageStatePersistence('ansible_page_state', () => ({
   username: username.value,
   port: port.value,
   password: password.value,
+  authMethod: authMethod.value,
   validatedHosts: validatedHosts.value,
   selectedHosts: selectedHosts.value,
   activeTab: activeTab.value,
@@ -689,6 +705,7 @@ usePageStatePersistence('ansible_page_state', () => ({
     username.value = saved.username || 'root'
     port.value = saved.port ?? 22
     password.value = saved.password || ''
+    authMethod.value = saved.authMethod === 'ssh_key' ? 'ssh_key' : 'password'
     validatedHosts.value = Array.isArray(saved.validatedHosts) ? saved.validatedHosts : []
     selectedHosts.value = Array.isArray(saved.selectedHosts) ? saved.selectedHosts : []
     activeTab.value = saved.activeTab || 'command'
@@ -734,6 +751,20 @@ usePageStatePersistence('ansible_page_state', () => ({
   font-weight: 600;
   margin-bottom: 12px;
   color: #333;
+}
+
+.auth-tip {
+  margin: -2px 0 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f3f1ff;
+  color: #5748a8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-tip code {
+  word-break: break-all;
 }
 
 .form-group {

@@ -13,29 +13,17 @@ from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 # Global test tasks storage
 test_tasks = {}
 test_tasks_lock = threading.Lock()
 
 
-def execute_ssh_command(host, command, username="root", password=None, port=22):
-    """
-    通过 SSH 执行远程命令
-    """
+def execute_ssh_command(host, command, auth, port=22):
+    """通过 SSH 执行远程命令。"""
     try:
-        import paramiko
-
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        if password:
-            client.connect(
-                host, port=int(port), username=username, password=password, timeout=10
-            )
-        else:
-            # 使用密钥认证
-            client.connect(host, port=int(port), username=username, timeout=10)
+        client = connect_ssh(host, auth, port=port, timeout=10)
 
         stdin, stdout, stderr = client.exec_command(command)
         output = stdout.read().decode("utf-8", errors="ignore")
@@ -55,7 +43,7 @@ def execute_ssh_command(host, command, username="root", password=None, port=22):
 
 
 def start_iperf3_server(
-    host, ports, core_min=0, use_cpu_binding=False, username="root", password=None
+    host, ports, core_min=0, use_cpu_binding=False, auth=None, ssh_port=22
 ):
     """
     在远程主机启动 iperf3 服务端
@@ -72,7 +60,7 @@ def start_iperf3_server(
         commands.append(cmd)
 
     full_command = " ".join(commands)
-    result = execute_ssh_command(host, full_command, username, password)
+    result = execute_ssh_command(host, full_command, auth, ssh_port)
 
     return result
 
@@ -84,8 +72,8 @@ def start_iperf3_client(
     duration,
     core_min=0,
     use_cpu_binding=False,
-    username="root",
-    password=None,
+    auth=None,
+    ssh_port=22,
 ):
     """
     在远程主机启动 iperf3 客户端
@@ -102,7 +90,7 @@ def start_iperf3_client(
 
     # 等待所有客户端完成
     full_command = " ".join(commands) + " wait"
-    result = execute_ssh_command(host, full_command, username, password)
+    result = execute_ssh_command(host, full_command, auth, ssh_port)
 
     return result
 
@@ -134,7 +122,7 @@ def parse_iperf3_output(output):
         return 0
 
 
-def check_dependencies(hosts, username="root", password=None):
+def check_dependencies(hosts, auth, ssh_port=22):
     """
     检查所有主机是否安装了必要的依赖
     返回: (success: bool, results: list)
@@ -153,7 +141,7 @@ def check_dependencies(hosts, username="root", password=None):
         host_result = {"host": host, "commands": {}, "messages": []}
 
         for cmd, required, description in commands_to_check:
-            result = execute_ssh_command(host, f"which {cmd}", username, password)
+            result = execute_ssh_command(host, f"which {cmd}", auth, ssh_port)
             is_installed = result["success"] and result["output"].strip()
 
             host_result["commands"][cmd] = is_installed
@@ -196,8 +184,8 @@ def run_one2one_test(task_id, config):
         duration = config.get("duration", 10)
         core_min = config.get("core_min", 0)
         use_cpu_binding = config.get("use_cpu_binding", False)
-        username = config.get("username", "root")
-        password = config.get("password")
+        auth = config["auth"]
+        ssh_port = config.get("port", 22)
 
         ports = list(range(port_min, port_min + cnum))
 
@@ -206,7 +194,7 @@ def run_one2one_test(task_id, config):
         # 启动服务端
         task["log"].append(f"[one2one] Starting iperf3 servers on {server_host}...")
         server_result = start_iperf3_server(
-            server_host, ports, core_min, use_cpu_binding, username, password
+            server_host, ports, core_min, use_cpu_binding, auth, ssh_port
         )
 
         if not server_result["success"]:
@@ -229,8 +217,8 @@ def run_one2one_test(task_id, config):
                 duration,
                 core_min,
                 use_cpu_binding,
-                username,
-                password,
+                auth,
+                ssh_port,
             )
 
             if client_result["success"]:
@@ -272,8 +260,8 @@ def run_roundrobin_test(task_id, config):
         duration = config.get("duration", 10)
         core_min = config.get("core_min", 0)
         use_cpu_binding = config.get("use_cpu_binding", False)
-        username = config.get("username", "root")
-        password = config.get("password")
+        auth = config["auth"]
+        ssh_port = config.get("port", 22)
 
         ports = list(range(port_min, port_min + cnum))
 
@@ -283,7 +271,7 @@ def run_roundrobin_test(task_id, config):
         task["log"].append(f"[roundrobin] Starting iperf3 servers on all hosts...")
         for host in hosts:
             server_result = start_iperf3_server(
-                host, ports, core_min, use_cpu_binding, username, password
+                host, ports, core_min, use_cpu_binding, auth, ssh_port
             )
             if not server_result["success"]:
                 task["log"].append(
@@ -308,8 +296,8 @@ def run_roundrobin_test(task_id, config):
                 duration,
                 core_min,
                 use_cpu_binding,
-                username,
-                password,
+                auth,
+                ssh_port,
             )
 
             if client_result["success"]:
@@ -347,11 +335,11 @@ def run_bandwidth_test(task_id, config):
         # 检查依赖
         task["log"].append("[检查] 开始检查主机依赖...")
         hosts = config["hosts"]
-        username = config.get("username", "root")
-        password = config.get("password")
+        auth = config["auth"]
+        ssh_port = config.get("port", 22)
         use_cpu_binding = config.get("use_cpu_binding", False)
 
-        all_ok, dep_results = check_dependencies(hosts, username, password)
+        all_ok, dep_results = check_dependencies(hosts, auth, ssh_port)
 
         for host_result in dep_results:
             task["log"].append(f"[检查] {host_result['host']}:")
@@ -420,8 +408,11 @@ def start_bandwidth_test(request):
         duration = data.get("duration", 10)
         core_min = data.get("core_min", 0)
         use_cpu_binding = data.get("use_cpu_binding", False)
-        username = data.get("username", "root")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
+        ssh_port = int(data.get("port", 22) or 22)
 
         if len(hosts) < 2:
             return JsonResponse({"error": "至少需要2台主机"}, status=400)
@@ -437,8 +428,8 @@ def start_bandwidth_test(request):
             "duration": duration,
             "core_min": core_min,
             "use_cpu_binding": use_cpu_binding,
-            "username": username,
-            "password": password,
+            "auth": auth,
+            "port": ssh_port,
         }
 
         test_tasks[task_id] = {
@@ -509,14 +500,16 @@ def validate_hosts(request):
     try:
         data = json.loads(request.body)
         hosts = data.get("hosts", [])
-        username = data.get("username", "root")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
         port = data.get("port", 22)
 
         results = []
 
         for host in hosts:
-            result = execute_ssh_command(host, 'echo "OK"', username, password, port)
+            result = execute_ssh_command(host, 'echo "OK"', auth, port)
 
             results.append(
                 {

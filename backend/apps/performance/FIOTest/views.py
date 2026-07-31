@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from channels.generic.websocket import AsyncWebsocketConsumer
-import paramiko
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +20,12 @@ active_tests_lock = threading.Lock()
 fio_consumers = {}
 
 
-def ssh_connect(host, username, password, port=22, timeout=10):
+def ssh_connect(host, auth, port=22, timeout=10):
     """SSH 连接"""
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        ssh.connect(host, port=port, username=username, password=password, timeout=timeout)
-        return ssh, None
-    except Exception as e:
-        return None, str(e)
+        return connect_ssh(host, auth, port=port, timeout=timeout), None
+    except Exception as exc:
+        return None, str(exc)
 
 
 def scan_dm_devices(ssh):
@@ -91,14 +88,16 @@ def validate_hosts(request):
     """验证主机连接"""
     data = json.loads(request.body)
     hosts = data.get('hosts', [])
-    username = data.get('username', 'root')
-    password = data.get('password', '')
+    try:
+        auth = parse_ssh_auth(data)
+    except ValueError as exc:
+        return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
     port = int(data.get('port', 22) or 22)
 
     results = []
 
     for host in hosts:
-        ssh, error = ssh_connect(host, username, password, port=port)
+        ssh, error = ssh_connect(host, auth, port=port)
         if ssh:
             stdin, stdout, stderr = ssh.exec_command("which fio")
             has_fio = stdout.read().decode().strip() != ''
@@ -143,14 +142,14 @@ def _send_to_consumer(task_id, message):
             logger.error(f"Send to consumer error: {e}")
 
 
-def run_fio_test(task_id, host, username, password, port, params):
+def run_fio_test(task_id, host, auth, port, params):
     """运行 FIO 测试（后台线程）"""
     _send_to_consumer(task_id, {
         'type': 'output',
         'data': f'[{host}] 正在连接...\n'
     })
 
-    ssh, error = ssh_connect(host, username, password, port=port)
+    ssh, error = ssh_connect(host, auth, port=port)
     if not ssh:
         with active_tests_lock:
             if task_id in active_tests:
@@ -515,8 +514,10 @@ def start_test(request):
     """开始 FIO 测试"""
     data = json.loads(request.body)
     hosts = data.get('hosts', [])
-    username = data.get('username', 'root')
-    password = data.get('password', '')
+    try:
+        auth = parse_ssh_auth(data)
+    except ValueError as exc:
+        return JsonResponse({'status': 'error', 'error': str(exc)}, status=400)
     port = int(data.get('port', 22) or 22)
     test_params = data.get('params', {})
 
@@ -537,8 +538,7 @@ def start_test(request):
         'start_time': time.time(),
         'completed_hosts': 0,
         'failed_hosts': [],
-        'username': username,
-        'password': password,
+        'auth': auth,
         'port': port,
     }
 
@@ -546,7 +546,7 @@ def start_test(request):
         thread_params = test_params.copy()
         thread = threading.Thread(
             target=run_fio_test,
-            args=(task_id, host, username, password, port, thread_params)
+            args=(task_id, host, auth, port, thread_params)
         )
         thread.daemon = True
         thread.start()
@@ -558,9 +558,9 @@ def start_test(request):
     })
 
 
-def _stop_remote_fio(host, username, password, port):
+def _stop_remote_fio(host, auth, port):
     """Stop all fio processes on one test host and verify they exited."""
-    ssh, error = ssh_connect(host, username, password, port)
+    ssh, error = ssh_connect(host, auth, port)
     if not ssh:
         return {'host': host, 'success': False, 'error': f'SSH 连接失败: {error}'}
 
@@ -599,11 +599,10 @@ def stop_test(request):
         test['stop'] = True
         test['status'] = 'stopping'
         hosts = list(test.get('hosts', []))
-        username = test.get('username', 'root')
-        password = test.get('password', '')
+        auth = test.get('auth')
         port = test.get('port', 22)
 
-    results = [_stop_remote_fio(host, username, password, port) for host in hosts]
+    results = [_stop_remote_fio(host, auth, port) for host in hosts]
     failed = [result for result in results if not result['success']]
 
     with active_tests_lock:

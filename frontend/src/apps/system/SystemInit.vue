@@ -35,8 +35,16 @@
           </div>
 
           <div class="form-group">
+            <label>认证方式:</label>
+            <select v-model="authMethod">
+              <option value="password">密码</option>
+              <option value="key">服务器 SSH 密钥</option>
+            </select>
+          </div>
+
+          <div v-if="authMethod === 'password'" class="form-group">
             <label>密码:</label>
-            <input type="text" v-model="password" placeholder="******">
+            <input type="password" v-model="password" placeholder="******">
           </div>
         </div>
 
@@ -180,6 +188,7 @@ const hostsText = ref('')
 const port = ref(22)
 const username = ref('root')
 const password = ref('')
+const authMethod = ref('password')
 const hostnamePrefix = ref('node')
 
 // Config
@@ -207,11 +216,11 @@ const notification = reactive({
 
 // Computed
 const canStart = computed(() => {
-  return hostsText.value.trim() && username.value.trim() && password.value && hostnamePrefix.value.trim()
+  return hostsText.value.trim() && username.value.trim() && (authMethod.value === 'key' || password.value) && hostnamePrefix.value.trim()
 })
 
 const canStartSingle = computed(() => {
-  return hostsText.value.trim() && username.value.trim() && password.value
+  return hostsText.value.trim() && username.value.trim() && (authMethod.value === 'key' || password.value)
 })
 
 // Methods
@@ -259,6 +268,7 @@ const getValidHosts = () => {
   return allIPs.map(ip => ({
     ip,
     username: username.value || 'root',
+    auth_method: authMethod.value,
     password: password.value,
     port: port.value
   }))
@@ -566,6 +576,7 @@ usePageStatePersistence('system_init_page_state', () => ({
   port: port.value,
   username: username.value,
   password: password.value,
+  authMethod: authMethod.value,
   hostnamePrefix: hostnamePrefix.value,
   config: { ...config },
   logs: logs.value,
@@ -576,6 +587,7 @@ usePageStatePersistence('system_init_page_state', () => ({
     port.value = saved.port ?? 22
     username.value = saved.username || 'root'
     password.value = saved.password || ''
+    authMethod.value = saved.authMethod || 'password'
     hostnamePrefix.value = saved.hostnamePrefix || 'node'
     Object.assign(config, {
       ntpServers: 'ntp.aliyun.com',

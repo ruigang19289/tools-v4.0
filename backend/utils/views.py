@@ -16,7 +16,7 @@ def info(request):
 
     return JsonResponse({
         'service': 'tools-backend',
-        'version': '2.0.0',
+        'version': '3.0.0',
         'paths': {
             'data': str(DATA_DIR),
             'vdbench_result': str(VDBENCH_RESULT_DIR),

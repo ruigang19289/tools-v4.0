@@ -35,8 +35,16 @@
           </div>
 
           <div class="form-group">
+            <label>认证方式:</label>
+            <select v-model="config.auth_method">
+              <option value="password">密码</option>
+              <option value="key">服务器 SSH 密钥</option>
+            </select>
+          </div>
+
+          <div v-if="config.auth_method === 'password'" class="form-group">
             <label>密码:</label>
-            <input type="text" v-model="config.password" placeholder="******">
+            <input type="password" v-model="config.password" placeholder="******">
           </div>
 
           <button class="btn btn-primary btn-full" @click="validateHosts" :disabled="!canValidate || validating">
@@ -257,6 +265,7 @@ const config = reactive({
   hostsText: '',
   port: 22,
   username: 'root',
+  auth_method: 'password',
   password: '',
   testNetwork: '',
   testMode: 'one2one',
@@ -325,11 +334,11 @@ const hosts = computed(() => {
 })
 
 const canStartTest = computed(() => {
-  return selectedHosts.value.length >= 2 && config.username && config.password && config.testNetwork.trim() !== ''
+  return selectedHosts.value.length >= 2 && config.username && (config.auth_method === 'key' || config.password) && config.testNetwork.trim() !== ''
 })
 
 const canValidate = computed(() => {
-  return hosts.value.length >= 1 && config.username && config.password
+  return hosts.value.length >= 1 && config.username && (config.auth_method === 'key' || config.password)
 })
 
 const testModeDescription = computed(() => {
@@ -408,6 +417,7 @@ const validateHosts = async () => {
     const response = await api.post(`${API_BASE}/validate`, {
       hosts: hosts.value,
       username: config.username,
+      auth_method: config.auth_method,
       password: config.password,
       port: config.port
     })
@@ -497,6 +507,7 @@ const startTest = async () => {
       core_min: config.coreMin,
       use_cpu_binding: config.useCpuBinding,
       username: config.username,
+      auth_method: config.auth_method,
       password: config.password,
       port: config.port
     }))
@@ -652,6 +663,7 @@ usePageStatePersistence('network_bandwidth_test_page_state', () => ({
       hostsText: '',
       port: 22,
       username: 'root',
+      auth_method: 'password',
       password: '',
       testNetwork: '',
       testMode: 'one2one',

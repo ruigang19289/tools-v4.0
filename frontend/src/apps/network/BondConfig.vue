@@ -36,8 +36,16 @@
           </div>
 
           <div class="form-group">
+            <label>认证方式:</label>
+            <select v-model="authMethod">
+              <option value="password">密码</option>
+              <option value="key">服务器 SSH 密钥</option>
+            </select>
+          </div>
+
+          <div v-if="authMethod === 'password'" class="form-group">
             <label>密码:</label>
-            <input type="text" v-model="password" placeholder="******" @keyup.enter="loadConfig">
+            <input type="password" v-model="password" placeholder="******" @keyup.enter="loadConfig">
           </div>
 
           <button class="btn btn-primary btn-full" @click="loadConfig" :disabled="loading || !isFormValid">
@@ -303,6 +311,7 @@ const hostsText = ref('')
 const port = ref(22)
 const username = ref('root')
 const password = ref('')
+const authMethod = ref('password')
 const loading = ref(false)
 const refreshing = ref(false)
 const applying = ref(false)
@@ -326,7 +335,7 @@ const confirmDialog = reactive({
   action: null
 })
 
-const isFormValid = computed(() => hostsText.value.trim() && username.value.trim() && password.value)
+const isFormValid = computed(() => hostsText.value.trim() && username.value.trim() && (authMethod.value === 'key' || password.value))
 const successfulHosts = computed(() => validatedHosts.value.filter(h => h.status === 'success').map(h => h.ip))
 const hasConnectedHosts = computed(() => successfulHosts.value.length > 0)
 const connectedHostCount = computed(() => connectedServers.value.length || successfulHosts.value.length)
@@ -510,7 +519,7 @@ const loadConfig = async () => {
   for (const host of ips) {
     try {
       const response = await api.post(`${API_BASE}/get-nics`, {
-        host, port: port.value, username: username.value, password: password.value
+        host, port: port.value, username: username.value, auth_method: authMethod.value, password: password.value
       })
 
       if (response.status === 'success') {
@@ -611,7 +620,7 @@ const refreshNetworkStatus = async () => {
     const promises = targets.map(async (host) => {
       try {
         const response = await api.post(`${API_BASE}/get-nics`, {
-          host, port: port.value, username: username.value, password: password.value
+          host, port: port.value, username: username.value, auth_method: authMethod.value, password: password.value
         })
 
         if (response.status === 'success') {
@@ -738,6 +747,7 @@ const executeApplyConfiguration = async () => {
           servers: [server],
           server_index: serverIndex,
           username: username.value,
+          auth_method: authMethod.value,
           password: password.value,
           bond_configs: bondConfigs.value
         })
@@ -819,6 +829,7 @@ const executeClearBonds = async () => {
         const response = await api.post(`${API_BASE}/clear-bonds`, {
           servers: [server],
           username: username.value,
+          auth_method: authMethod.value,
           password: password.value
         })
 

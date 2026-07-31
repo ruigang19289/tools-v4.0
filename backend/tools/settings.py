@@ -7,7 +7,7 @@ import os
 from datetime import timedelta
 
 # 项目版本号
-VERSION = "2.0"
+VERSION = "3.0"
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

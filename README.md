@@ -86,7 +86,17 @@ frontend/src/
 Docker 镜像建议使用 host 网络运行，以保证容器内 SSH 可直连业务节点：
 
 ```bash
+# 密码认证（原有方式）
 docker run -d --name sds-tools --network host tools-app:v2.0
+
+# SSH 私钥认证：只读挂载宿主机准备好的专用密钥目录。
+# 远端主机须已将对应公钥加入目标账号的 authorized_keys。
+docker run -d --name sds-tools --network host \
+  -v /opt/tools-ssh:/root/.ssh:ro \
+  -e TOOLS_ANSIBLE_PRIVATE_KEY_PATH=/root/.ssh/id_ed25519 \
+  tools-app:v2.0
+
+> 不要把私钥上传到网页或写入镜像。容器内默认读取 `/root/.ssh/id_ed25519`；若使用其他文件名，通过 `TOOLS_ANSIBLE_PRIVATE_KEY_PATH` 指定。私钥认证要求无交互口令私钥，或由运维侧预先处理其解锁方式。
 ```
 
 默认端口：

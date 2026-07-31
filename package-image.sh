@@ -50,7 +50,6 @@ case "${VERSION}" in
     v*) IMAGE_TAG="${VERSION}" ;;
     *) IMAGE_TAG="v${VERSION}" ;;
 esac
-
 if [ "${2:-}" != "" ]; then
     OUTPUT_DIR="$2"
 fi
@@ -117,6 +116,20 @@ else
 fi
 
 VDBENCH_MOUNT="/root/vdbench50407/output:/app/data/vdbench-result"
+# Prefer the standard Ed25519 key; use the local RSA key automatically on
+# hosts that were provisioned before Ed25519 became the default.
+SSH_PRIVATE_KEY_PATH="/root/.ssh/id_ed25519"
+if [ ! -f "\$SSH_PRIVATE_KEY_PATH" ] && [ -f "/root/.ssh/id_rsa" ]; then
+    SSH_PRIVATE_KEY_PATH="/root/.ssh/id_rsa"
+fi
+CONTAINER_SSH_PRIVATE_KEY_PATH="/root/.ssh/id_ed25519"
+
+if [ ! -f "\$SSH_PRIVATE_KEY_PATH" ]; then
+    echo "ERROR: SSH private key not found: /root/.ssh/id_ed25519 or /root/.ssh/id_rsa"
+    exit 1
+fi
+
+echo "Using SSH private key: \$SSH_PRIVATE_KEY_PATH"
 
 echo "=== Start container ==="
 docker run -d \\
@@ -124,6 +137,8 @@ docker run -d \\
     --restart unless-stopped \\
     --network host \\
     -v "\$VDBENCH_MOUNT" \\
+    -v "\$SSH_PRIVATE_KEY_PATH:\$CONTAINER_SSH_PRIVATE_KEY_PATH:ro" \\
+    -e "TOOLS_ANSIBLE_PRIVATE_KEY_PATH=\$CONTAINER_SSH_PRIVATE_KEY_PATH" \\
     "\$IMAGE_NAME:\$IMAGE_TAG"
 
 echo "=== Container status ==="

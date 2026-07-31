@@ -8,13 +8,20 @@
       </div>
       <div class="header-controls">
         <label for="server-address">远程主机:</label>
-        <input type="text" id="server-address" v-model="serverAddress" placeholder="192.168.1.1" @keyup.enter="connect">
+        <input type="text" id="server-address" v-model="serverAddress" placeholder="单IP或IP段" title="支持单个 IP、10.3.11.61-63、10.3.11.61-10.3.11.63，以及逗号或换行分隔" @keyup.enter="connect">
         <label for="username">用户名:</label>
         <input type="text" id="username" v-model="username" placeholder="root" @keyup.enter="connect">
         <label for="port">端口:</label>
         <input type="number" id="port" v-model="port" placeholder="22" style="width: 60px;" @keyup.enter="connect">
-        <label for="password">密码:</label>
-        <input type="text" id="password" v-model="password" placeholder="******" @keyup.enter="connect">
+        <label for="auth-method">认证:</label>
+        <select id="auth-method" v-model="authMethod">
+          <option value="password">密码</option>
+          <option value="key">服务器 SSH 密钥</option>
+        </select>
+        <template v-if="authMethod === 'password'">
+          <label for="password">密码:</label>
+          <input type="password" id="password" v-model="password" placeholder="******" @keyup.enter="connect">
+        </template>
         <button id="connect-btn" class="btn-compact" @click="connect" :disabled="isConnecting || !canConnect">
           {{ isConnecting ? '连接中...' : '连接' }}
         </button>
@@ -136,11 +143,13 @@ const serverAddress = ref('')
 const username = ref('root')
 const port = ref(22)
 const password = ref('')
+const authMethod = ref('password')
 const isConnecting = ref(false)
 const activeHost = ref(null)
 const currentTime = ref('--:--:--')
 const excludeSystemDisk = ref(true)
 const isCollecting = ref(false)
+const collectingHost = ref(null)
 const showSaveDialog = ref(false)
 const collectedDataCount = ref(0)
 const saveFilename = ref('')
@@ -149,7 +158,8 @@ const dragOverTab = ref(null)
 
 // Computed
 const canConnect = computed(() => {
-  return serverAddress.value.trim() && username.value.trim() && password.value
+  return serverAddress.value.trim() && username.value.trim() &&
+    (authMethod.value === 'key' || password.value)
 })
 
 // 处理重新连接
@@ -158,7 +168,7 @@ const handleReconnect = async (history) => {
 
   // 并发连接所有主机
   for (const conn of history) {
-    await connectToServer(conn.host, conn.username, conn.password)
+    await connectToServer(conn.host, conn.username, conn.password, conn.port, conn.auth_method)
   }
 
   // 恢复收集状态
@@ -202,32 +212,48 @@ const updateTime = () => {
 
 let timeInterval = null
 
-// 解析地址输入（支持范围）
+// 解析地址输入：支持单 IP、逗号/换行分隔，以及同网段连续 IP 段。
 const parseAddresses = (input) => {
-  input = input.trim()
+  const addresses = []
+  const seen = new Set()
 
-  if (input.includes('-')) {
-    const parts = input.split('-')
-    if (parts.length === 2) {
-      const start = parts[0].trim()
-      const end = parts[1].trim()
-      const startParts = start.split('.')
-      const endParts = end.split('.')
-
-      if (startParts.length === 4 && endParts.length === 4) {
-        const addresses = []
-        const startLast = parseInt(startParts[3])
-        const endLast = parseInt(endParts[3])
-
-        for (let i = startLast; i <= endLast; i++) {
-          addresses.push(`${startParts[0]}.${startParts[1]}.${startParts[2]}.${i}`)
-        }
-        return addresses
-      }
+  const addAddress = (address) => {
+    if (!seen.has(address)) {
+      seen.add(address)
+      addresses.push(address)
     }
   }
 
-  return [input]
+  for (const entry of input.split(/[\n,]+/).map(item => item.trim()).filter(Boolean)) {
+    const shortRange = entry.match(/^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$/)
+    const fullRange = entry.match(/^(\d+\.\d+\.\d+\.)(\d+)-(\d+\.\d+\.\d+\.)(\d+)$/)
+
+    let prefix = ''
+    let start = 0
+    let end = 0
+    if (shortRange) {
+      [, prefix, start, end] = shortRange
+    } else if (fullRange && fullRange[1] === fullRange[3]) {
+      prefix = fullRange[1]
+      start = fullRange[2]
+      end = fullRange[4]
+    } else {
+      addAddress(entry)
+      continue
+    }
+
+    start = Number(start)
+    end = Number(end)
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > 255 || start > end) {
+      addAddress(entry)
+      continue
+    }
+    for (let host = start; host <= end; host++) {
+      addAddress(`${prefix}${host}`)
+    }
+  }
+
+  return addresses
 }
 
 // 显示通知
@@ -239,11 +265,12 @@ const showNotification = (message, type = 'info') => {
 }
 
 // 连接到单个服务器
-const connectToServer = async (host, user, pwd, port = 22) => {
+const connectToServer = async (host, user, pwd, port = 22, auth_method = authMethod.value) => {
   try {
     const response = await api.post('/perf/monitor/connect', {
       host: host,
       username: user,
+      auth_method,
       password: pwd,
       port: port
     })
@@ -253,6 +280,7 @@ const connectToServer = async (host, user, pwd, port = 22) => {
         connection_id: response.connection_id,
         host: host,
         username: user,
+        auth_method,
         password: pwd,
         port: port,
         system_info: response.system_info,
@@ -314,6 +342,12 @@ const updateSystemInfo = async (host) => {
       connections.value[host].data = response.data
       console.log('CPU info:', response.data?.cpu)
 
+      // Sample only after a successful response so collection never records
+      // an empty snapshot while the asynchronous request is still pending.
+      if (collections.value[host]?.isCollecting) {
+        collectCurrentData(host, response.data)
+      }
+
       if (activeHost.value === host) {
         updateDisplay(host, response.data)
       }
@@ -340,7 +374,7 @@ const connect = async () => {
   const pwd = password.value
   const portNum = port.value || 22
 
-  if (!addressInput || !user || !pwd) {
+  if (!addressInput || !user || (authMethod.value === 'password' && !pwd)) {
     showNotification('请填写完整的连接信息', 'error')
     return
   }
@@ -352,7 +386,7 @@ const connect = async () => {
     let successCount = 0
 
     for (const host of addresses) {
-      const success = await connectToServer(host, user, pwd, portNum)
+      const success = await connectToServer(host, user, pwd, portNum, authMethod.value)
       if (success) successCount++
       await new Promise(resolve => setTimeout(resolve, 100))
     }
@@ -394,7 +428,13 @@ const disconnect = async (host) => {
     delete monitoringIntervals.value[host]
   }
 
-  // 停止收集
+  // Stop collection state if its bound host is disconnected.
+  if (collectingHost.value === host) {
+    collections.value[host].isCollecting = false
+    collections.value[host].interval = null
+    collectingHost.value = null
+    isCollecting.value = false
+  }
   if (collectionIntervals.value[host]) {
     clearInterval(collectionIntervals.value[host])
     delete collectionIntervals.value[host]
@@ -619,7 +659,9 @@ const toggleCollect = () => {
     return
   }
 
-  const host = activeHost.value
+  // A collection remains bound to the host selected when it started.
+  // Switching tabs must not stop or save another host's empty collection.
+  const host = collectingHost.value || activeHost.value
 
   if (!collections.value[host]) {
     collections.value[host] = { data: [], startTime: null }
@@ -627,20 +669,24 @@ const toggleCollect = () => {
 
   const collection = collections.value[host]
 
-  if (!collection.interval) {
+  if (!collectingHost.value) {
     // 开始收集
     collection.isCollecting = true
+    collectingHost.value = host
     collection.data = []
     collection.startTime = new Date()
-    collection.interval = setInterval(() => collectCurrentData(host), 1000)
-    collectCurrentData(host)
+    // updateSystemInfo records each successfully returned monitoring sample.
+    collection.interval = true
+    if (connections.value[host]?.data) {
+      collectCurrentData(host, connections.value[host].data)
+    }
     isCollecting.value = true
     showNotification(`开始收集 ${host} 的数据...`, 'success')
   } else {
     // 停止收集
     collection.isCollecting = false
-    clearInterval(collection.interval)
     collection.interval = null
+    collectingHost.value = null
     isCollecting.value = false
     collectedDataCount.value = collection.data.length
 
@@ -655,19 +701,16 @@ const toggleCollect = () => {
 
 // 更新收集按钮状态
 const updateCollectButton = () => {
-  if (activeHost.value && collections.value[activeHost.value]?.interval) {
-    isCollecting.value = true
-  } else {
-    isCollecting.value = false
-  }
+  isCollecting.value = Boolean(collectingHost.value)
 }
 
 // 收集当前数据
-const collectCurrentData = (host) => {
+const collectCurrentData = (host, snapshot = null) => {
   const connection = connections.value[host]
   const collection = collections.value[host]
+  const data = snapshot || connection?.data
 
-  if (!connection || !connection.data || !collection) return
+  if (!connection || !data || !collection) return
 
   const timestamp = new Date().toLocaleString('zh-CN', {
     year: 'numeric',
@@ -680,14 +723,29 @@ const collectCurrentData = (host) => {
   }).replace(/\//g, '/')
 
   let dataBlock = timestamp + '\n'
-  const data = connection.data
 
-  // CPU信息
+  // CPU 信息：使用固定列宽，便于直接在终端或编辑器中查看。
   if (data.cpu?.numa_nodes && data.cpu.numa_nodes.length > 0) {
+    const cpuColumns = [
+      ['CPU', 6, false], ['%usr', 7], ['%sys', 7], ['%nice', 7],
+      ['%idle', 7], ['%iowait', 8], ['%irq', 7], ['%soft', 7], ['%steal', 8]
+    ]
+    dataBlock += cpuColumns.map(([name, width, rightAligned = true]) =>
+      (rightAligned ? name.padStart(width) : name.padEnd(width))
+    ).join(' ') + '\n'
+
     data.cpu.numa_nodes.forEach(node => {
       if (node.cpus && node.cpus.length > 0) {
         node.cpus.forEach(cpu => {
-          dataBlock += `%Cpu${cpu.cpu}  : ${cpu.us?.toFixed(1)} us,  ${cpu.sy?.toFixed(1)} sy,  ${cpu.ni?.toFixed(1)} ni, ${cpu.id?.toFixed(1)} id,  ${cpu.wa?.toFixed(1)} wa,  ${cpu.hi?.toFixed(1)} hi,  ${cpu.si?.toFixed(1)} si,  ${cpu.st?.toFixed(1)} st\n`
+          dataBlock += `${(`CPU${cpu.cpu}`).padEnd(6)} ` +
+            `${formatMonitorNumber(cpu.us, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.sy, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.ni, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.id, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.wa, 8, 1)} ` +
+            `${formatMonitorNumber(cpu.hi, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.si, 7, 1)} ` +
+            `${formatMonitorNumber(cpu.st, 8, 1)}\n`
         })
       }
     })
@@ -695,38 +753,58 @@ const collectCurrentData = (host) => {
 
   // 磁盘信息
   if (data.disk?.iostat && data.disk.iostat.length > 0) {
-    dataBlock += 'Device            r/s     rMB/s   rrqm/s  %rrqm r_await rareq-sz     w/s     wMB/s   wrqm/s  %wrqm w_await wareq-sz     d/s     dMB/s   drqm/s  %drqm d_await dareq-sz     f/s f_await  aqu-sz  %util\n'
+    const iostatColumns = [
+      ['Device', 16, false], ['r/s', 8], ['rMB/s', 9], ['rrqm/s', 9],
+      ['%rrqm', 7], ['r_await', 7], ['rareq-sz', 9], ['w/s', 8],
+      ['wMB/s', 9], ['wrqm/s', 9], ['%wrqm', 7], ['w_await', 7],
+      ['wareq-sz', 9], ['d/s', 8], ['dMB/s', 9], ['drqm/s', 9],
+      ['%drqm', 7], ['d_await', 7], ['dareq-sz', 9], ['f/s', 8],
+      ['f_await', 7], ['aqu-sz', 7], ['%util', 6]
+    ]
+    dataBlock += iostatColumns.map(([name, width, rightAligned = true]) =>
+      (rightAligned ? name.padStart(width) : name.padEnd(width))
+    ).join(' ') + '\n'
 
     data.disk.iostat.forEach(disk => {
-      const line = `${disk.device.padEnd(16)} ` +
-        `${disk.r_s?.toFixed(2).padStart(8)} ` +
-        `${disk.rMB_s?.toFixed(2).padStart(9)} ` +
-        `${disk.rrqm_s?.toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(7)} ` +
-        `${disk.r_await?.toFixed(2).padStart(7)} ` +
-        `${(0).toFixed(2).padStart(9)} ` +
-        `${disk.w_s?.toFixed(2).padStart(8)} ` +
-        `${disk.wMB_s?.toFixed(2).padStart(9)} ` +
-        `${disk.wrqm_s?.toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(7)} ` +
-        `${disk.w_await?.toFixed(2).padStart(7)} ` +
-        `${(0).toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(8)} ` +
-        `${(0).toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(7)} ` +
-        `${(0).toFixed(2).padStart(7)} ` +
-        `${(0).toFixed(2).padStart(9)} ` +
-        `${(0).toFixed(2).padStart(8)} ` +
-        `${(0).toFixed(2).padStart(7)} ` +
-        `${disk.avgqu_sz?.toFixed(2).padStart(7)} ` +
-        `${disk.util?.toFixed(2).padStart(6)}\n`
+      const line = `${String(disk.device || '').slice(0, 16).padEnd(16)} ` +
+        `${formatIostatNumber(disk.r_s, 8)} ` +
+        `${formatIostatNumber(disk.rMB_s, 9)} ` +
+        `${formatIostatNumber(disk.rrqm_s, 9)} ` +
+        `${formatIostatNumber(0, 7)} ` +
+        `${formatIostatNumber(disk.r_await, 7)} ` +
+        `${formatIostatNumber(0, 9)} ` +
+        `${formatIostatNumber(disk.w_s, 8)} ` +
+        `${formatIostatNumber(disk.wMB_s, 9)} ` +
+        `${formatIostatNumber(disk.wrqm_s, 9)} ` +
+        `${formatIostatNumber(0, 7)} ` +
+        `${formatIostatNumber(disk.w_await, 7)} ` +
+        `${formatIostatNumber(0, 9)} ` +
+        `${formatIostatNumber(0, 8)} ` +
+        `${formatIostatNumber(0, 9)} ` +
+        `${formatIostatNumber(0, 9)} ` +
+        `${formatIostatNumber(0, 7)} ` +
+        `${formatIostatNumber(0, 7)} ` +
+        `${formatIostatNumber(0, 9)} ` +
+        `${formatIostatNumber(0, 8)} ` +
+        `${formatIostatNumber(0, 7)} ` +
+        `${formatIostatNumber(disk.avgqu_sz, 7)} ` +
+        `${formatIostatNumber(disk.util, 6)}
+`
       dataBlock += line
     })
   }
 
   collection.data.push(dataBlock)
 }
+
+// 监控导出使用固定宽度字段，缺失数据统一以 0 补齐。
+const formatMonitorNumber = (value, width, digits = 2) => {
+  const number = Number(value)
+  const formatted = Number.isFinite(number) ? number.toFixed(digits) : (0).toFixed(digits)
+  return formatted.padStart(width)
+}
+
+const formatIostatNumber = formatMonitorNumber
 
 // 保存到本地
 const saveToLocal = () => {
@@ -738,19 +816,29 @@ const saveToLocal = () => {
     return
   }
 
-  const content = collection.data.join('\n')
-  const blob = new Blob([content], { type: 'text/plain' })
-  const url = URL.createObjectURL(blob)
+  try {
+    const content = collection.data.join('\n')
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const filename = saveFilename.value || `${host}-data.txt`
+    const link = document.createElement('a')
 
-  const a = document.createElement('a')
-  a.href = url
-  a.download = saveFilename.value || `${host}-data.txt`
-  a.click()
+    // Attach the link and delay URL cleanup for browser compatibility.
+    link.href = url
+    link.download = filename
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
 
-  URL.revokeObjectURL(url)
-  collection.data = []
-  showSaveDialog.value = false
-  showNotification(`数据已保存到本地: ${saveFilename.value}`, 'success')
+    collection.data = []
+    showSaveDialog.value = false
+    showNotification(`数据已保存到本地: ${filename}`, 'success')
+  } catch (error) {
+    console.error('保存监控日志失败:', error)
+    showNotification(`保存失败: ${error.message}`, 'error')
+  }
 }
 
 // 丢弃数据
@@ -895,6 +983,7 @@ usePageStatePersistence('monitor_ui_state', () => ({
   username: username.value,
   port: port.value,
   password: password.value,
+  authMethod: authMethod.value,
   activeHost: activeHost.value,
   excludeSystemDisk: excludeSystemDisk.value,
   showSaveDialog: showSaveDialog.value,
@@ -908,6 +997,7 @@ usePageStatePersistence('monitor_ui_state', () => ({
     username.value = saved.username || 'root'
     port.value = saved.port ?? 22
     password.value = saved.password || ''
+    authMethod.value = saved.authMethod || 'password'
     activeHost.value = saved.activeHost || null
     excludeSystemDisk.value = saved.excludeSystemDisk ?? true
     showSaveDialog.value = Boolean(saved.showSaveDialog)

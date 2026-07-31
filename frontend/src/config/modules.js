@@ -16,4 +16,5 @@ export const MODULES_STATUS = {
   // 系统工具
   ansible: true,
   system_init: true,
+  hardware_inspection: true,
 }

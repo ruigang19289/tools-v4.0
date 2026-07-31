@@ -19,6 +19,7 @@ RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/
 # 设置时区和 Ansible 默认配置
 ENV TZ=Asia/Shanghai
 ENV ANSIBLE_HOST_KEY_CHECKING=False
+ENV TOOLS_ANSIBLE_PRIVATE_KEY_PATH=/root/.ssh/id_ed25519
 RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && mkdir -p /etc/ansible \
     && printf '%s\n' \

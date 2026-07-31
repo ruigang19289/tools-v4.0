@@ -33,8 +33,15 @@
           </div>
 
           <div class="form-group">
+            <label>认证方式:</label>
+            <select v-model="config.auth_method">
+              <option value="password">密码</option>
+              <option value="key">服务器 SSH 密钥</option>
+            </select>
+          </div>
+          <div v-if="config.auth_method === 'password'" class="form-group">
             <label>密码:</label>
-            <input type="text" v-model="config.password" placeholder="******">
+            <input type="password" v-model="config.password" placeholder="******">
           </div>
 
           <button class="btn btn-primary btn-full" @click="validateHosts" :disabled="!canValidate">
@@ -395,6 +402,7 @@ const hostsText = ref('')
 
 const config = reactive({
   username: 'root',
+  auth_method: 'password',
   password: '',
   port: 22
 })
@@ -490,7 +498,8 @@ watch(() => params.ioengine, (newEngine) => {
 
 const canValidate = computed(() => {
   const validHosts = getValidHosts()
-  return validHosts.length > 0 && config.username && config.password
+  return validHosts.length > 0 && config.username &&
+    (config.auth_method === 'key' || config.password)
 })
 
 const canStart = computed(() => {
@@ -955,6 +964,7 @@ const validateHosts = async () => {
       body: JSON.stringify({
         hosts: validHosts,
         username: config.username,
+        auth_method: config.auth_method,
         password: config.password,
         port: config.port
       })
@@ -1092,6 +1102,7 @@ const startTest = async () => {
       body: JSON.stringify({
         hosts: validHosts,
         username: config.username,
+        auth_method: config.auth_method,
         password: config.password,
         port: config.port,
         params: {

@@ -12,27 +12,16 @@ from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-import paramiko
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 
 # SSH connection helper
-def ssh_connect(host, username, password, port=22, timeout=10):
+def ssh_connect(host, auth, port=22, timeout=10):
     """Establish SSH connection"""
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            host,
-            port=port,
-            username=username,
-            password=password,
-            timeout=timeout,
-            allow_agent=False,
-            look_for_keys=False,
-        )
-        return client, None
-    except Exception as e:
-        return None, str(e)
+        return connect_ssh(host, auth, port=port, timeout=timeout), None
+    except Exception as exc:
+        return None, str(exc)
 
 
 def execute_ssh_command(client, command):
@@ -607,17 +596,19 @@ def get_nics(request):
     try:
         data = json.loads(request.body)
         host = data.get("host")
-        username = data.get("username")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "error": str(exc)}, status=400)
         port = int(data.get("port") or 22)
 
-        if not all([host, username, password]):
+        if not host:
             return JsonResponse(
                 {"status": "error", "error": "缺少必要参数"}, status=400
             )
 
         # SSH connection
-        client, error = ssh_connect(host, username, password, port=port)
+        client, error = ssh_connect(host, auth, port=port)
         if error:
             return JsonResponse({"status": "error", "error": error}, status=401)
 
@@ -665,10 +656,13 @@ def check_service(request):
     try:
         data = json.loads(request.body)
         servers = data.get("servers", [])
-        username = data.get("username")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "error": str(exc)}, status=400)
+        port = int(data.get("port") or 22)
 
-        if not all([servers, username, password]):
+        if not servers:
             return JsonResponse(
                 {"status": "error", "error": "缺少必要参数"}, status=400
             )
@@ -680,7 +674,7 @@ def check_service(request):
             server_result = {"server": server, "status": "checking"}
 
             try:
-                client, error = ssh_connect(server, username, password)
+                client, error = ssh_connect(server, auth, port=port)
                 if error:
                     server_result["status"] = "error"
                     server_result["error"] = error
@@ -742,14 +736,17 @@ def apply_bond(request):
         # DEBUG: Return raw data to see what was received
         servers = data.get("servers", [])
         server_index_param = data.get("server_index", None)
-        username = data.get("username")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "error": str(exc)}, status=400)
+        port = int(data.get("port") or 22)
         bond_configs = data.get("bond_configs", [])
 
         # DEBUG: Check all keys in data
         received_keys = list(data.keys())
 
-        if not all([servers, username, password, bond_configs]):
+        if not all([servers, bond_configs]):
             return JsonResponse(
                 {
                     "status": "error",
@@ -781,7 +778,7 @@ def apply_bond(request):
             server_result = {"server": server, "status": "processing", "bonds": []}
 
             try:
-                client, error = ssh_connect(server, username, password)
+                client, error = ssh_connect(server, auth, port=port)
                 if error:
                     server_result["status"] = "error"
                     server_result["error"] = error
@@ -897,10 +894,13 @@ def clear_bonds(request):
     try:
         data = json.loads(request.body)
         servers = data.get("servers", [])
-        username = data.get("username")
-        password = data.get("password")
+        try:
+            auth = parse_ssh_auth(data)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "error": str(exc)}, status=400)
+        port = int(data.get("port") or 22)
 
-        if not all([servers, username, password]):
+        if not servers:
             return JsonResponse(
                 {"status": "error", "error": "缺少必要参数"}, status=400
             )
@@ -912,7 +912,7 @@ def clear_bonds(request):
             server_result = {"server": server, "status": "processing"}
 
             try:
-                client, error = ssh_connect(server, username, password)
+                client, error = ssh_connect(server, auth, port=port)
                 if error:
                     server_result["status"] = "error"
                     server_result["error"] = error

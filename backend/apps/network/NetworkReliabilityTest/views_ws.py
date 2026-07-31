@@ -9,6 +9,7 @@ import threading
 import time
 import re
 from channels.generic.websocket import AsyncWebsocketConsumer
+from backend.utils.ssh_auth import connect_ssh, parse_ssh_auth
 
 
 class BandwidthTestConsumer(AsyncWebsocketConsumer):
@@ -23,7 +24,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         print(f"WebSocket disconnected: {close_code}")
 
-    def get_test_ip(self, ssh_ip, test_network, username, password):
+    def get_test_ip(self, ssh_ip, test_network, auth):
         """
         从主机上查询指定网段的第一个 IP 地址
         如果未指定测试网段，则返回 SSH IP
@@ -31,22 +32,12 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         if not test_network or test_network.strip() == "":
             return ssh_ip
 
-        import paramiko
-
         # 提取网段前缀 (例如: 192.168.34.0/24 -> 192.168.34)
         network_prefix = ".".join(test_network.split("/")[0].split(".")[:-1])
 
         try:
             # SSH 连接到主机
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
-                ssh_ip,
-                port=self.ssh_port,
-                username=username,
-                password=password,
-                timeout=10,
-            )
+            client = connect_ssh(ssh_ip, auth, port=self.ssh_port, timeout=10)
 
             # 查询该网段的第一个 IP 地址
             cmd = f"ip addr show | grep \"inet {network_prefix}\\.\" | awk '{{print $2}}' | cut -d'/' -f1 | head -1"
@@ -71,6 +62,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
 
             if action == "start_test":
                 # 启动测试
+                auth = parse_ssh_auth(data)
                 config = {
                     "hosts": data.get("hosts", []),
                     "test_network": data.get("test_network", ""),
@@ -80,8 +72,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                     "duration": data.get("duration", 10),
                     "core_min": data.get("core_min", 0),
                     "use_cpu_binding": data.get("use_cpu_binding", False),
-                    "username": data.get("username", "root"),
-                    "password": data.get("password"),
+                    "auth": auth,
                     "port": data.get("port", 22),
                 }
 
@@ -91,9 +82,13 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                 )
                 thread.start()
 
-        except Exception as e:
+        except ValueError as exc:
             await self.send(
-                text_data=json.dumps({"type": "error", "message": f"Error: {str(e)}"})
+                text_data=json.dumps({"type": "error", "message": str(exc)})
+            )
+        except Exception as exc:
+            await self.send(
+                text_data=json.dumps({"type": "error", "message": f"测试启动失败: {exc}"})
             )
 
     def run_test_sync(self, config):
@@ -103,8 +98,6 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
     async def run_test(self, config):
         """执行带宽测试"""
         try:
-            import paramiko
-
             hosts = config["hosts"]
             test_network = config["test_network"]
             test_mode = config["test_mode"]
@@ -113,8 +106,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
             duration = config["duration"]
             core_min = config["core_min"]
             use_cpu_binding = config["use_cpu_binding"]
-            username = config["username"]
-            password = config["password"]
+            auth = config["auth"]
             self.ssh_port = int(config.get("port", 22))
 
             if len(hosts) < 2:
@@ -127,7 +119,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
             for host in hosts:
                 # 检查 iperf3
                 result = self.execute_ssh_command(
-                    host, "which iperf3", username, password
+                    host, "which iperf3", auth
                 )
                 if result["success"] and result["output"].strip():
                     await self.send_message("log", f"[检查] {host}: ✓ iperf3 已安装")
@@ -141,7 +133,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                 # 检查 taskset (如果需要)
                 if use_cpu_binding:
                     result = self.execute_ssh_command(
-                        host, "which taskset", username, password
+                        host, "which taskset", auth
                     )
                     if not (result["success"] and result["output"].strip()):
                         await self.send_message(
@@ -158,7 +150,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                 for host in hosts:
                     try:
                         test_ip = self.get_test_ip(
-                            host, test_network, username, password
+                            host, test_network, auth
                         )
                         host_test_ip_map[host] = test_ip
                         await self.send_message("log", f"[查询] {host} -> {test_ip}")
@@ -180,8 +172,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                     duration,
                     core_min,
                     use_cpu_binding,
-                    username,
-                    password,
+                    auth,
                 )
             elif test_mode == "roundrobin":
                 await self.run_roundrobin_test(
@@ -192,8 +183,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                     duration,
                     core_min,
                     use_cpu_binding,
-                    username,
-                    password,
+                    auth,
                 )
             elif test_mode == "alltest":
                 await self.run_one2one_test(
@@ -204,8 +194,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                     duration,
                     core_min,
                     use_cpu_binding,
-                    username,
-                    password,
+                    auth,
                 )
                 await self.run_roundrobin_test(
                     hosts,
@@ -215,8 +204,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                     duration,
                     core_min,
                     use_cpu_binding,
-                    username,
-                    password,
+                    auth,
                 )
 
             await self.send_message("completed", "测试完成")
@@ -236,8 +224,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         duration,
         core_min,
         use_cpu_binding,
-        username,
-        password,
+        auth,
     ):
         """执行 one2one 测试"""
         await self.send_message("log", f"[one2one] 开始测试...")
@@ -250,10 +237,10 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         # 启动服务端
         await self.send_message("log", f"[one2one] 在 {server_host} 启动服务端...")
         server_cmd = self.start_iperf3_servers(
-            server_host, ports, core_min, use_cpu_binding, username, password
+            server_host, ports, core_min, use_cpu_binding, auth
         )
         await self.send_message("log", f"[命令] {server_host}: {server_cmd}")
-        self.execute_ssh_command(server_host, server_cmd, username, password)
+        self.execute_ssh_command(server_host, server_cmd, auth)
 
         await asyncio.sleep(2)  # 等待服务端启动
 
@@ -274,8 +261,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                 duration,
                 core_min,
                 use_cpu_binding,
-                username,
-                password,
+                auth,
             )
 
             result = {
@@ -292,7 +278,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
             await self.send_message("result", {"test_mode": "one2one", **result})
 
         # 清理服务端进程
-        self.cleanup_iperf3(server_host, username, password)
+        self.cleanup_iperf3(server_host, auth)
 
         await self.send_message("log", f"[one2one] 测试完成")
 
@@ -305,8 +291,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         duration,
         core_min,
         use_cpu_binding,
-        username,
-        password,
+        auth,
     ):
         """执行 roundrobin 测试"""
         await self.send_message("log", f"[roundrobin] 开始测试...")
@@ -317,10 +302,10 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         await self.send_message("log", f"[roundrobin] 在所有主机上启动服务端...")
         for host in hosts:
             server_cmd = self.start_iperf3_servers(
-                host, ports, core_min, use_cpu_binding, username, password
+                host, ports, core_min, use_cpu_binding, auth
             )
             await self.send_message("log", f"[命令] {host}: {server_cmd}")
-            self.execute_ssh_command(host, server_cmd, username, password)
+            self.execute_ssh_command(host, server_cmd, auth)
 
         await asyncio.sleep(2)  # 等待服务端启动
 
@@ -343,8 +328,7 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
                 duration,
                 core_min,
                 use_cpu_binding,
-                username,
-                password,
+                auth,
             )
 
             result = {
@@ -362,12 +346,12 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
 
         # 清理所有服务端进程
         for host in hosts:
-            self.cleanup_iperf3(host, username, password)
+            self.cleanup_iperf3(host, auth)
 
         await self.send_message("log", f"[roundrobin] 测试完成")
 
     def start_iperf3_servers(
-        self, host, ports, core_min, use_cpu_binding, username, password
+        self, host, ports, core_min, use_cpu_binding, auth
     ):
         """启动 iperf3 服务端"""
         commands = []
@@ -393,22 +377,12 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
         duration,
         core_min,
         use_cpu_binding,
-        username,
-        password,
+        auth,
     ):
         """运行 iperf3 客户端并实时输出"""
-        import paramiko
         import time
 
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            client_host,
-            port=self.ssh_port,
-            username=username,
-            password=password,
-            timeout=10,
-        )
+        client = connect_ssh(client_host, auth, port=self.ssh_port, timeout=10)
 
         # 使用单个 iperf3 命令，-P 参数指定并发数
         cnum = len(ports)
@@ -590,24 +564,14 @@ class BandwidthTestConsumer(AsyncWebsocketConsumer):
             print(f"Failed to parse bandwidth: {e}")
             return 0
 
-    def cleanup_iperf3(self, host, username, password):
+    def cleanup_iperf3(self, host, auth):
         """清理 iperf3 进程"""
-        self.execute_ssh_command(host, "pkill iperf3", username, password)
+        self.execute_ssh_command(host, "pkill iperf3", auth)
 
-    def execute_ssh_command(self, host, command, username, password):
+    def execute_ssh_command(self, host, command, auth):
         """执行 SSH 命令"""
         try:
-            import paramiko
-
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
-                host,
-                port=self.ssh_port,
-                username=username,
-                password=password,
-                timeout=10,
-            )
+            client = connect_ssh(host, auth, port=self.ssh_port, timeout=10)
 
             stdin, stdout, stderr = client.exec_command(command)
             output = stdout.read().decode("utf-8", errors="ignore")

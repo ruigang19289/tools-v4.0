@@ -50,6 +50,11 @@ const routes = [
     component: () => import('@/apps/system/Ansible.vue')
   },
   {
+    path: '/system/hardware-inspection',
+    name: 'HardwareInspection',
+    component: () => import('@/apps/system/HardwareInspection.vue')
+  },
+  {
     path: '/system/init',
     name: 'SystemInit',
     component: () => import('@/apps/system/SystemInit.vue')
