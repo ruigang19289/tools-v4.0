@@ -59,6 +59,11 @@ const routes = [
     name: 'SystemInit',
     component: () => import('@/apps/system/SystemInit.vue')
   },
+  {
+    path: '/system/node-precheck',
+    name: 'NodePrecheck',
+    component: () => import('@/apps/system/NodePrecheck.vue')
+  },
 ]
 
 const router = createRouter({

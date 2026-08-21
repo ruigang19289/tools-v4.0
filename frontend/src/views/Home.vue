@@ -111,6 +111,7 @@
             </router-link>
           </li>
           <li class="tool-item"><router-link to="/system/hardware-inspection" :class="['tool-link', { disabled: !modulesStatus.hardware_inspection }]" :event="modulesStatus.hardware_inspection ? 'click' : ''"><span class="tool-name">硬件巡检</span><span class="tool-badge">{{ modulesStatus.hardware_inspection ? '可用' : '维护中' }}</span></router-link></li>
+          <li class="tool-item"><router-link to="/system/node-precheck" :class="['tool-link', { disabled: !modulesStatus.node_precheck }]" :event="modulesStatus.node_precheck ? 'click' : ''"><span class="tool-name">节点预检</span><span class="tool-badge">{{ modulesStatus.node_precheck ? '可用' : '维护中' }}</span></router-link></li>
           <li class="tool-item">
             <router-link
               to="/system/init"

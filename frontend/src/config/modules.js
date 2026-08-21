@@ -17,4 +17,5 @@ export const MODULES_STATUS = {
   ansible: true,
   system_init: true,
   hardware_inspection: true,
+  node_precheck: true,
 }
