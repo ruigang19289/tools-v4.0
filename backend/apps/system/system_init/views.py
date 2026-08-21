@@ -9,6 +9,8 @@
 - 安全加固（防火墙规则）
 """
 import json
+import os
+import posixpath
 import threading
 import time
 import uuid
@@ -153,6 +155,61 @@ def validate_hosts(request):
         })
     except Exception as e:
         return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
+
+
+def deploy_init_files(ssh, result):
+    """Deploy the standard initialization files to one target host."""
+    default_files_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), '../../../../files')
+    )
+    files_dir = os.path.abspath(
+        os.environ.get('TOOLS_INIT_FILES_DIR', default_files_dir)
+    )
+    file_specs = [
+        ('sdsos_bash_profile.sh', '/etc/profile.d/sdsos_bash_profile.sh', 0o644),
+        ('toprc', '.toprc', 0o644),
+        ('config', '.ssh/config', 0o600),
+    ]
+
+    missing_files = [
+        name for name, _, _ in file_specs
+        if not os.path.isfile(os.path.join(files_dir, name))
+    ]
+    if missing_files:
+        raise FileNotFoundError(
+            f'初始化文件不存在: {", ".join(missing_files)}'
+        )
+
+    home_output, home_error, _ = execute_ssh_command(ssh, 'printf %s "$HOME"')
+    remote_home = home_output.strip()
+    if not remote_home:
+        raise RuntimeError(f'无法获取远端用户 HOME 目录: {home_error or "未知错误"}')
+
+    _, mkdir_error, _ = execute_ssh_command(
+        ssh, 'mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"'
+    )
+    if mkdir_error:
+        raise RuntimeError(f'创建远端 SSH 目录失败: {mkdir_error.strip()}')
+
+    sftp = ssh.open_sftp()
+    try:
+        for filename, target, mode in file_specs:
+            local_path = os.path.join(files_dir, filename)
+            remote_path = target if target.startswith('/') else posixpath.join(remote_home, target)
+            temporary_path = f'{remote_path}.tools-v3.tmp'
+            try:
+                sftp.put(local_path, temporary_path)
+                sftp.chmod(temporary_path, mode)
+                sftp.rename(temporary_path, remote_path)
+            except Exception:
+                try:
+                    sftp.remove(temporary_path)
+                except Exception:
+                    pass
+                raise
+            result['logs'].append(f'[OK] 已部署文件: {filename} -> {remote_path}')
+    finally:
+        sftp.close()
 
 
 def generate_hostname_from_ip(ip, index=0, prefix='node'):
@@ -380,6 +437,14 @@ Host *
             else:
                 result['logs'].append('[WARNING] 未提供 iptables 命令')
 
+        # 7. 部署标准初始化文件
+        if config.get('deploy_init_files'):
+            try:
+                deploy_init_files(ssh, result)
+            except Exception as exc:
+                result['success'] = False
+                result['logs'].append(f'[ERROR] 初始化文件部署失败: {exc}')
+
         result['message'] = '\n'.join(result['logs']) if result['logs'] else '操作已完成'
 
     except Exception as e:
@@ -483,6 +548,7 @@ def full_init(request):
             'harden_etcd': harden_etcd,
             'harden_postgresql': harden_postgresql,
             'harden_elasticsearch': harden_elasticsearch,
+            'deploy_init_files': True,
         }
 
         other_results = execute_parallel_init(sorted_hosts, config)

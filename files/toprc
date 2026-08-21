@@ -1,0 +1,19 @@
+top's Config File (Linux processes with windows)
+Id:i, Mode_altscr=0, Mode_irixps=1, Delay_time=3.0, Curwin=0
+Cpu	fieldscur=¥¦¨µ³´»½ÀÄ·º¸9Å')*+,-./0126<>?ABCFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghij
+	winflags=195380, sortindx=18, maxtasks=0, graph_cpus=0, graph_mems=0
+	summclr=6, msgsclr=6, headclr=3, taskclr=6
+Mem	fieldscur=¥»½À¼ÃÁÂÍÎ&97º(34D'Å)*+,-./012568>?FGHIJKLOPQRSTUVWXYZ[\]^_`abcdefghij
+	winflags=195380, sortindx=21, maxtasks=0, graph_cpus=0, graph_mems=0
+	summclr=6, msgsclr=6, headclr=3, taskclr=6
+Sch	fieldscur=¥:;<=>?@AMBNCµ³´ÇÄ¶·¹ÅÆ&'()*+,-./0128HIJKLOPQRSTUVWXYZ[\]^_`abcdefghij
+	winflags=194868, sortindx=0, maxtasks=0, graph_cpus=0, graph_mems=0
+	summclr=6, msgsclr=6, headclr=3, taskclr=6
+Cgp	fieldscur=¥¦§¨*097:D)+,-./1234568;<=>?@ABCFGÈIJKLMNOÐÑÒÓÔÕÅVWXYZ[\]^_`abcdefghij
+	winflags=194868, sortindx=0, maxtasks=0, graph_cpus=0, graph_mems=0
+	summclr=6, msgsclr=6, headclr=3, taskclr=6
+Fixed_widest=0, Summ_mscale=0, Task_mscale=0, Zero_suppress=0
+
+pipe	NetFiles	lsof -a -l -n -P -i4 -p %d 2>&1
+pipe	OpenFiles	lsof -a -l -n -P -p %d 2>&1
+file	NUMAInfo	/proc/%d/numa_maps

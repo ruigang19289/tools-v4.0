@@ -144,20 +144,29 @@ for dev in /sys/class/nvme/nvme*; do
   fw=$(echo "$id" | awk -F: '/^fr[[:space:]]*:/{gsub(/^[ \t]+/,"",$2);print $2;exit}')
   printf '%-8s %-7s %-7s %-12s %-12s %-12s %-12s\n' "$ctrl" "${used:-?}" "${temp:-?}C" "${media:-?}" "${logs:-?}" "${crit:-?}" "${fw:-?}"
 done
+rdma_ifaces=''
+if command -v rdma >/dev/null 2>&1; then
+  # rdma link is the authoritative OS-side mapping from RDMA device to netdev.
+  rdma_ifaces=$(rdma link show 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="netdev"&&(i+1)<=NF)print $(i+1)}' | sort -u | xargs || true)
+fi
+is_rdma_iface() { case " $rdma_ifaces " in *" $1 "*) return 0;; *) return 1;; esac; }
+nic_compare=''
 printf '\n== NETWORK ==\n' 
-printf '%-12s %-14s %-8s %-10s %-14s %-10s %-12s %-12s %-10s %-10s\n' IFACE BDF STATE SPEED PCIE DRIVER DRIVER_VER FIRMWARE RX_ERR TX_ERR
+printf '%-12s %-14s %-8s %-8s %-6s %-10s %-14s %-10s %-12s %-12s %-10s %-10s\n' IFACE BDF ROLE MTU STATE SPEED PCIE DRIVER DRIVER_VER FIRMWARE RX_ERR TX_ERR
 for sysdev in /sys/class/net/*; do
   [ -L "$sysdev/device" ] || continue; iface=$(basename "$sysdev"); bdf=$(basename "$(readlink -f "$sysdev/device" 2>/dev/null)")
   pcie='?'; [ "$HAS_LSPCI" -eq 1 ] && pcie=$(lspci -vv -s "$bdf" 2>/dev/null | awk '/LnkSta:/{s="?";w="?"; if(match($0,/Speed [^,]+/))s=substr($0,RSTART+6,RLENGTH-6); if(match($0,/Width x[0-9]+/))w=substr($0,RSTART+6,RLENGTH-6); print s"/"w; exit}')
   pcie_speed=${pcie%/*}; pcie_width=${pcie#*/}; pcie_bw=$(pcie_bandwidth "$pcie_speed" "$pcie_width")
+  mtu=$(value "$sysdev/mtu" '?')
+  if is_rdma_iface "$iface"; then role=RDMA; else role=ETHERNET; fi
   speed=$(ethtool "$iface" 2>/dev/null | awk -F: '/Speed:/{gsub(/[ \t]/,"",$2); print $2; exit}')
   info=$(ethtool -i "$iface" 2>/dev/null || true)
   driver=$(echo "$info" | awk -F: '/^driver:/{gsub(/^[ \t]+/,"",$2);print $2;exit}')
   driver_ver=$(echo "$info" | awk -F: '/^version:/{gsub(/^[ \t]+/,"",$2);print $2;exit}')
   firmware=$(echo "$info" | awk -F: '/^firmware-version:/{sub(/^[^:]*:[ \t]*/,"");print;exit}')
   state=$(value "$sysdev/operstate" '?'); rxerr=$(value "$sysdev/statistics/rx_errors" 0); txerr=$(value "$sysdev/statistics/tx_errors" 0)
-  printf '%-12s %-14s %-8s %-10s %-14s %-10s %-12s %-12s %-10s %-10s\n' "$iface" "$bdf" "$state" "${speed:-?}" "${pcie:-?}" "${driver:-?}" "${driver_ver:-?}" "${firmware:-?}" "$rxerr" "$txerr"
-  nic_compare="${nic_compare}COMPARE_NIC|${iface}|${bdf}|${state}|${speed:-?}|${pcie:-?}|${pcie_bw:-?}|${driver:-?}|${driver_ver:-?}|${firmware:-?}|${rxerr}|${txerr}\n"
+  printf '%-12s %-14s %-8s %-8s %-6s %-10s %-14s %-10s %-12s %-12s %-10s %-10s\n' "$iface" "$bdf" "$role" "$mtu" "$state" "${speed:-?}" "${pcie:-?}" "${driver:-?}" "${driver_ver:-?}" "${firmware:-?}" "$rxerr" "$txerr"
+  nic_compare="${nic_compare}COMPARE_NIC|${iface}|${bdf}|${role}|${mtu}|${state}|${speed:-?}|${pcie:-?}|${pcie_bw:-?}|${driver:-?}|${driver_ver:-?}|${firmware:-?}|${rxerr}|${txerr}\n"
 done
 printf '\n== COMPARISON DATA ==\n'; printf '%b' "$nvme_compare$nic_compare"
 printf '\n== WARNINGS ==\n'
@@ -216,13 +225,13 @@ def parse_fingerprint(report):
             continue
         if line.startswith("COMPARE_NIC|"):
             parts = line.split("|")
-            if len(parts) == 12:
-                _, iface, bdf, state, speed, pcie, pcie_bw, driver, version, firmware, rxerr, txerr = parts
+            if len(parts) == 14:
+                _, iface, bdf, role, mtu, state, speed, pcie, pcie_bw, driver, version, firmware, rxerr, txerr = parts
                 pcie_speed_match = re.search(r"[0-9.]+GT/s", pcie)
                 pcie_speed = pcie_speed_match.group(0) if pcie_speed_match else ""
                 pcie_gen_map = {"2.5GT/s": "PCIe 1.0", "5GT/s": "PCIe 2.0", "8GT/s": "PCIe 3.0", "16GT/s": "PCIe 4.0", "32GT/s": "PCIe 5.0", "64GT/s": "PCIe 6.0"}
                 pcie_display = f"{pcie}（{pcie_gen_map[pcie_speed]}）" if pcie_speed in pcie_gen_map else pcie
-                values["NIC_ITEMS"][iface] = {"bdf": bdf, "state": state, "speed": speed, "pcie": pcie_display, "pcie_bw": pcie_bw, "driver": driver, "version": version, "firmware": firmware, "rxerr": rxerr, "txerr": txerr}
+                values["NIC_ITEMS"][iface] = {"bdf": bdf, "role": role, "mtu": mtu, "state": state, "speed": speed, "pcie": pcie_display, "pcie_bw": pcie_bw, "driver": driver, "version": version, "firmware": firmware, "rxerr": rxerr, "txerr": txerr}
             continue
         if ": " not in line or line.startswith("=="):
             continue
@@ -303,7 +312,7 @@ def comparison(results):
         elif values:
             different.append({"name": label, "values": values})
     nvme = device_comparison(fingerprints, "NVME_ITEMS", "NVMe", [("bdf", "BDF"), ("cap", "能力"), ("actual", "实际"), ("bandwidth", "实际带宽"), ("status", "状态")])
-    nics = device_comparison(fingerprints, "NIC_ITEMS", "网卡", [("bdf", "BDF"), ("state", "状态"), ("speed", "速率"), ("pcie", "PCIe"), ("pcie_bw", "PCIe 带宽"), ("driver", "驱动"), ("version", "驱动版本"), ("firmware", "固件"), ("rxerr", "RX_ERR"), ("txerr", "TX_ERR")])
+    nics = device_comparison(fingerprints, "NIC_ITEMS", "网卡", [("bdf", "BDF"), ("role", "角色"), ("mtu", "MTU"), ("state", "状态"), ("speed", "速率"), ("pcie", "PCIe"), ("pcie_bw", "PCIe 带宽"), ("driver", "驱动"), ("version", "驱动版本"), ("firmware", "固件"), ("rxerr", "RX_ERR"), ("txerr", "TX_ERR")])
     bandwidth = []
     for item in nvme + nics:
         per_host = {}
